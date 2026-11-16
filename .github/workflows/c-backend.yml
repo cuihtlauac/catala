@@ -1,0 +1,65 @@
+name: C backend
+
+# Build the compiler and run the C backend tests with the C compilers users
+# actually have: gcc on Linux, clang on Linux, and Apple clang on macOS.
+# Generated C is compiled by clerk with -std=c89 -pedantic -Wall -Werror, so
+# compiler-specific warnings (e.g. clang's -Wstrict-prototypes) break builds.
+
+on:
+  push:
+    branches: ["tarides/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  c-backend:
+    name: ${{ matrix.os }} / ${{ matrix.cc }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, cc: gcc }
+          - { os: ubuntu-latest, cc: clang }
+          - { os: macos-latest, cc: clang }
+    runs-on: ${{ matrix.os }}
+    env:
+      CATALA: _build/default/compiler/catala.exe
+      CLERK: _build/default/build_system/clerk.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Install dependencies
+        run: opam install ./catala.opam --deps-only --with-test --yes
+
+      - name: Build compiler and clerk
+        id: build
+        # Not 'make compiler': it also builds the proof plugin, which needs z3
+        run: opam exec -- dune build compiler/catala.exe build_system/clerk.exe
+
+      # The C runtime includes <gmp.h>; Homebrew's prefix is not on Apple
+      # clang's default search paths.
+      - name: Make Homebrew's GMP visible to the C compiler
+        if: runner.os == 'macOS'
+        run: |
+          prefix=$(brew --prefix)
+          echo "CPATH=$prefix/include" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
+
+      - name: Select C compiler
+        run: |
+          ${{ matrix.cc }} --version
+          printf '\n[variables]\nCC = ["%s"]\n' '${{ matrix.cc }}' >> clerk.toml
+
+      - name: Interpreter tests
+        run: opam exec -- $CLERK test tests --exe $CATALA
+
+      # Run even if the interpreter tests failed: they don't depend on the C
+      # compiler, and this step is the point of the workflow.
+      - name: C backend tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: opam exec -- $CLERK test tests --exe $CATALA --backend c -c--disable-warnings

@@ -41,19 +41,15 @@ jobs:
         # Not 'make compiler': it also builds the proof plugin, which needs z3
         run: opam exec -- dune build compiler/catala.exe build_system/clerk.exe
 
-      # The C runtime includes <gmp.h>; Homebrew's prefix is not on Apple
-      # clang's default search paths.
-      - name: Make Homebrew's GMP visible to the C compiler
-        if: runner.os == 'macOS'
-        run: |
-          prefix=$(brew --prefix)
-          echo "CPATH=$prefix/include" >> "$GITHUB_ENV"
-          echo "LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
-
-      - name: Select C compiler
+      # The C runtime includes <gmp.h>. Homebrew's prefix (/opt/homebrew on
+      # Apple Silicon) is not on Apple clang's default search paths, so let
+      # clerk ask pkg-config for GMP's flags, as conf-gmp does on macOS.
+      - name: Configure clerk (C compiler, GMP through pkg-config)
         run: |
           ${{ matrix.cc }} --version
-          printf '\n[variables]\nCC = ["%s"]\n' '${{ matrix.cc }}' >> clerk.toml
+          echo "pkg-config gmp: $(pkg-config --cflags --libs gmp)"
+          printf '\n[variables]\nCC = ["%s"]\n\n[c]\nuse_libraries = ["gmp"]\n' '${{ matrix.cc }}' >> clerk.toml
+          opam exec -- $CLERK list-vars | grep -E '^(CC|CFLAGS|C_LINK_FLAGS)='
 
       - name: Interpreter tests
         run: opam exec -- $CLERK test tests --exe $CATALA
